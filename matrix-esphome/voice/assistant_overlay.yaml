@@ -1,0 +1,171 @@
+# Voice Assistant
+
+micro_wake_word:
+  id: !extend mww
+  on_wake_word_detected:
+    - script.execute: reset_screensaver
+    - if:
+        condition:
+          switch.is_on: wake_sound
+        then:
+          - script.execute:
+              id: play_sound
+              priority: true
+              sound_file: !lambda return id(wake_word_triggered_sound);
+          - delay: 300ms
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+
+voice_assistant:
+  id: va
+  microphone: box_mic
+  media_player: external_media_player
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+
+  on_listening:
+    - script.execute: reset_screensaver
+    - script.execute:
+        id: set_phase
+        phase: ${voice_assist_waiting_for_command_phase_id}
+    - text_sensor.template.publish:
+        id: text_request
+        state: "..."
+    - text_sensor.template.publish:
+        id: text_response
+        state: "..."
+    - script.execute: draw_display
+
+  on_stt_vad_start:
+    - script.execute:
+        id: set_phase
+        phase: ${voice_assist_listening_phase_id}
+
+  on_stt_vad_end:
+    - script.execute:
+        id: set_phase
+        phase: ${voice_assist_thinking_phase_id}
+    - script.execute: draw_display
+
+  on_stt_end:
+    - script.execute:
+        id: send_stt_text_event
+        stt_text: !lambda 'return x;'
+    - text_sensor.template.publish:
+        id: text_request
+        state: !lambda return x;
+    - script.execute: draw_display
+
+
+  on_tts_start:
+    - script.execute:
+        id: send_tts_text_event
+        tts_text: !lambda 'return x;'
+    - script.execute: reset_screensaver
+    - text_sensor.template.publish:
+        id: text_response
+        state: !lambda return x;
+    - script.execute:
+        id: set_phase
+        phase: ${voice_assist_replying_phase_id}
+    - lambda: 'id(playing_internal_sound) = true;'
+    - script.execute: draw_display
+
+  on_tts_end:
+    - script.execute:
+        id: send_tts_uri_event
+        tts_uri: !lambda 'return x;'
+
+  on_end:
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+
+    - wait_until:
+        condition:
+          - and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  speaker.is_playing:
+                    id: box_speaker
+
+    - if:
+        condition:
+          lambda: return id(wake_word_engine_location).current_option() == "On device";
+        then:
+          - lambda: id(va).set_use_wake_word(false);
+          - micro_wake_word.start:
+          - script.execute: set_idle_or_mute_phase
+          - script.execute: draw_display
+        else:
+          - if:
+              condition:
+                lambda: |-
+                  return id(voice_assistant_phase) == ${voice_assist_replying_phase_id}
+                      || id(voice_assistant_phase) == ${voice_assist_thinking_phase_id};
+              then:
+                - script.execute: set_idle_or_mute_phase
+                - script.execute: draw_display
+
+  on_error:
+    - if:
+        condition:
+          lambda: return !id(init_in_progress);
+        then:
+          - script.execute:
+              id: set_phase
+              phase: ${voice_assist_error_phase_id}
+          - script.execute: draw_display
+          - delay: 1s
+          - if:
+              condition:
+                switch.is_off: mute
+              then:
+                - script.execute:
+                    id: set_phase
+                    phase: ${voice_assist_idle_phase_id}
+              else:
+                - script.execute:
+                    id: set_phase
+                    phase: ${voice_assist_muted_phase_id}
+                - script.execute: draw_display
+
+  on_client_connected:
+    - lambda: id(init_in_progress) = false;
+    - script.execute: start_wake_word
+    - script.execute: set_idle_or_mute_phase
+    - script.execute: draw_display
+
+  on_client_disconnected:
+    - script.execute: stop_wake_word
+    - script.execute:
+        id: set_phase
+        phase: ${voice_assist_not_ready_phase_id}
+    - script.execute: draw_display
+
+  on_timer_started:
+    - script.execute: reset_screensaver
+    - script.execute: draw_display
+
+  on_timer_cancelled:
+    - component.update: main_display
+
+  on_timer_updated:
+    - component.update: main_display
+
+  on_timer_tick:
+    - component.update: main_display
+
+  on_timer_finished:
+    - switch.turn_on: timer_ringing
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+    - script.execute:
+        id: set_phase
+        phase: ${voice_assist_timer_finished_phase_id}
+    - script.execute: draw_display
